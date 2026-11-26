@@ -1,0 +1,7 @@
+.env
+.env.admin
+.vs/
+**/bin/
+**/obj/
+AppData/
+**/*.csproj.user
