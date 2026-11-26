@@ -34,6 +34,15 @@ namespace HLPassword
         private string _currentUserEmail = string.Empty;
         private SupabaseClient? _supabaseClient;
         private const string _internalRecoveryKey = "HLPassword_Cloud_Recovery_Key_2026";
+        private static readonly HashSet<string> AdminEmails = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "hoanglam0302.zip@gmail.com",
+            "dtphat2k4@gmail.com"
+        };
+        private bool _isAdmin = false;
+        private bool _hasPersonalVault = false;
+        private List<LockedAccountRecord> _adminAllAccounts = new List<LockedAccountRecord>();
+        private List<string> _adminBroadcasts = new List<string>();
 
         // Bộ đếm số lần vi phạm đặt tên Folder trong mỗi phiên đăng nhập (tối đa 3 lần nhắc, lần 4 khóa)
         private int _folderViolationCount = 0;
@@ -107,6 +116,7 @@ namespace HLPassword
             FolderGrid.Visibility = Visibility.Hidden;
             AuthGrid.Visibility = Visibility.Hidden;
             PasswordGrid.Visibility = Visibility.Hidden;
+            AdminDashboardGrid.Visibility = Visibility.Hidden;
 
             this.PreviewKeyDown += MainWindow_PreviewKeyDown;
 
@@ -1182,17 +1192,39 @@ namespace HLPassword
             {
                 await UpdateLoginProgress(20);
                 _supabaseClient ??= new SupabaseClient(App.Supabase);
-                await _supabaseClient.SignInWithGoogleAsync();
+                SupabaseSession session = await _supabaseClient.SignInWithGoogleAsync();
+                _isAdmin = AdminEmails.Contains(session.Email);
+
                 SupabaseProfile? profile = await _supabaseClient.GetProfileAsync();
                 if (profile == null)
                 {
+                    if (_isAdmin)
+                    {
+                        _hasPersonalVault = false;
+                        _currentUsername = "ADMIN";
+                        _currentUserEmail = session.Email;
+                        await UpdateLoginProgress(100);
+                        AdminLoginSuccess();
+                        return;
+                    }
                     throw new InvalidOperationException("Chưa có hồ sơ HLPassword cho tài khoản Google này. Hãy đăng ký trước.");
                 }
                 await UpdateLoginProgress(50);
                 string? accountJson = await CloudGet("Account");
-                AccountData account = accountJson == null
-                    ? throw new InvalidOperationException("Không tìm thấy dữ liệu vault của tài khoản.")
-                    : JsonSerializer.Deserialize<AccountData>(accountJson)
+                if (accountJson == null)
+                {
+                    if (_isAdmin)
+                    {
+                        _hasPersonalVault = false;
+                        _currentUsername = profile.Username;
+                        _currentUserEmail = profile.Email;
+                        await UpdateLoginProgress(100);
+                        AdminLoginSuccess();
+                        return;
+                    }
+                    throw new InvalidOperationException("Không tìm thấy dữ liệu vault của tài khoản.");
+                }
+                AccountData account = JsonSerializer.Deserialize<AccountData>(accountJson)
                         ?? throw new InvalidOperationException("Dữ liệu tài khoản không hợp lệ.");
 
                 byte[] salt = Convert.FromBase64String(account.SaltBase64);
@@ -1208,6 +1240,7 @@ namespace HLPassword
                 SecureRAM_LockKey();
                 _currentUsername = profile.Username;
                 _currentUserEmail = profile.Email;
+                _hasPersonalVault = true;
                 var adminRecord = await AdminLockManager.GetAccountStatusAsync(_currentUsername);
                 _isAccountLocked = adminRecord?.IsCurrentlyLocked ?? account.IsLocked;
                 _canShowUnlockInput = AdminLockManager.IsAdminApprovedForUnlock(adminRecord);
@@ -1226,10 +1259,19 @@ namespace HLPassword
                 }
                 await SyncBroadcastNotificationsAsync(false);
                 await UpdateLoginProgress(100);
-                LoginSuccess();
+                if (_isAdmin)
+                {
+                    AdminLoginSuccess();
+                }
+                else
+                {
+                    LoginSuccess();
+                }
             }
             catch (Exception ex)
             {
+                _isAdmin = false;
+                _hasPersonalVault = false;
                 _currentUsername = string.Empty;
                 _currentUserEmail = string.Empty;
                 SecureRAM_ClearKey();
@@ -1356,10 +1398,17 @@ namespace HLPassword
             _folderViolationCount = 0;
             _isAccountLocked = false;
             _canShowUnlockInput = false;
+            _isAdmin = false;
+            _hasPersonalVault = false;
+            _adminAllAccounts.Clear();
+            _adminBroadcasts.Clear();
             _currentLockReason = "Vi phạm quy tắc tiêu chuẩn cộng đồng";
             ApplyAccountLockUI(false, false);
 
             _currentUsername = ""; UserEmailText.Text = ""; BtnSettingsContainer.Visibility = Visibility.Hidden;
+            BtnMenuAdminDashboard.Visibility = Visibility.Collapsed;
+            SepMenuAdminDashboard.Visibility = Visibility.Collapsed;
+            BtnAdminToVault.Visibility = Visibility.Collapsed;
             TreeStructure.Clear();
             _inMemoryPasswords.Clear();
 
@@ -1372,10 +1421,324 @@ namespace HLPassword
             catch { }
 
             FolderGrid.Visibility = Visibility.Hidden; PasswordGrid.Visibility = Visibility.Hidden;
+            AdminDashboardGrid.Visibility = Visibility.Hidden;
             HomeGrid.Visibility = Visibility.Visible;
             FolderListBox.Items.Clear();
+            AdminAccountsListBox.Items.Clear();
+            AdminBroadcastsListBox.Items.Clear();
         }
 
+        #endregion
+
+        #region ADMIN DASHBOARD
+        private async void AdminLoginSuccess()
+        {
+            _folderViolationCount = 0;
+            AuthGrid.Visibility = Visibility.Hidden;
+            FolderGrid.Visibility = Visibility.Hidden;
+            PasswordGrid.Visibility = Visibility.Hidden;
+            AdminDashboardGrid.Visibility = Visibility.Visible;
+
+            UserEmailText.Text = $"ADMIN • {_currentUserEmail}";
+            AdminSubtitleText.Text = $"Đăng nhập với quyền Quản trị viên ({_currentUserEmail})";
+            BtnSettingsContainer.Visibility = Visibility.Visible;
+            BtnMenuAdminDashboard.Visibility = Visibility.Visible;
+            SepMenuAdminDashboard.Visibility = Visibility.Visible;
+            BtnAdminToVault.Visibility = _hasPersonalVault ? Visibility.Visible : Visibility.Collapsed;
+
+            SettingsRedDot.Visibility = Visibility.Hidden;
+            MenuRedDot.Visibility = Visibility.Hidden;
+
+            BgAnimationCanvas.Opacity = 0.25;
+            try
+            {
+                var floatingAnimation = (System.Windows.Media.Animation.Storyboard)this.BgAnimationCanvas.FindResource("FloatingAnimation");
+                floatingAnimation.Begin(BgAnimationCanvas, true);
+            }
+            catch { }
+
+            await LoadAdminDashboardAsync();
+        }
+
+        private async Task LoadAdminDashboardAsync()
+        {
+            BtnAdminRefresh.IsEnabled = false;
+            try
+            {
+                var (accounts, broadcasts) = await AdminLockManager.GetAllAdminDataAsync();
+                _adminAllAccounts = accounts;
+                _adminBroadcasts = broadcasts;
+
+                int total = accounts.Count;
+                int locked = accounts.Count(a => a.IsCurrentlyLocked);
+                AdminStatTotal.Text = total.ToString();
+                AdminStatActive.Text = (total - locked).ToString();
+                AdminStatLocked.Text = locked.ToString();
+                AdminStatBroadcasts.Text = broadcasts.Count.ToString();
+
+                RenderAdminAccountsList();
+                RenderAdminBroadcastsList();
+            }
+            catch (Exception ex)
+            {
+                LogError(ex);
+                ShowCustomMessage("Admin Dashboard", $"Không thể tải dữ liệu quản trị: {ex.Message}");
+            }
+            finally
+            {
+                BtnAdminRefresh.IsEnabled = true;
+            }
+        }
+
+        private void RenderAdminAccountsList()
+        {
+            AdminAccountsListBox.Items.Clear();
+            string query = AdminSearchBox.Text.Trim();
+
+            var filtered = string.IsNullOrEmpty(query)
+                ? _adminAllAccounts
+                : _adminAllAccounts.Where(a =>
+                    a.Username.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    a.Email.Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
+
+            foreach (var acc in filtered)
+            {
+                var card = new Border
+                {
+                    CornerRadius = new CornerRadius(10),
+                    Padding = new Thickness(12, 9, 12, 9),
+                    Background = _folderCardBgBrush,
+                    BorderBrush = _folderCardBorderBrush,
+                    BorderThickness = new Thickness(1)
+                };
+
+                var grid = new Grid();
+                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var infoStack = new StackPanel();
+                infoStack.Children.Add(new TextBlock
+                {
+                    Text = $"{acc.Username}  ({acc.Email})",
+                    Foreground = Brushes.White,
+                    FontSize = 13.5,
+                    FontWeight = FontWeights.SemiBold
+                });
+
+                string detail = $"Số lần khóa: {acc.LockCount}";
+                if (acc.IsCurrentlyLocked)
+                {
+                    if (AdminLockManager.IsAdminApprovedForUnlock(acc))
+                    {
+                        string otp = acc.UnlockOtp.Substring("APPROVED|".Length).Trim();
+                        detail += $"  •  OTP mở khóa: {otp}";
+                    }
+                    else
+                    {
+                        detail += $"  •  Lý do: {AdminLockManager.GetLockReason(acc)}";
+                    }
+                }
+                infoStack.Children.Add(new TextBlock
+                {
+                    Text = detail,
+                    Foreground = _breadcrumbLinkBrush,
+                    FontSize = 11.5,
+                    Margin = new Thickness(0, 2, 0, 0),
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                });
+                Grid.SetColumn(infoStack, 0);
+                grid.Children.Add(infoStack);
+
+                string statusLabel = !acc.IsCurrentlyLocked
+                    ? "HOẠT ĐỘNG"
+                    : (AdminLockManager.IsAdminApprovedForUnlock(acc) ? "CHỜ OTP" : "ĐÃ KHÓA");
+                string badgeHex = !acc.IsCurrentlyLocked
+                    ? "#00E676"
+                    : (AdminLockManager.IsAdminApprovedForUnlock(acc) ? "#FFD54F" : "#FF4D6D");
+
+                var badge = new Border
+                {
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(8, 3, 8, 3),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Background = CreateFrozenBrush("#22000000"),
+                    BorderBrush = CreateFrozenBrush(badgeHex),
+                    BorderThickness = new Thickness(1),
+                    Margin = new Thickness(10, 0, 0, 0)
+                };
+                badge.Child = new TextBlock
+                {
+                    Text = statusLabel,
+                    Foreground = CreateFrozenBrush(badgeHex),
+                    FontSize = 11,
+                    FontWeight = FontWeights.Bold
+                };
+                Grid.SetColumn(badge, 1);
+                grid.Children.Add(badge);
+
+                card.Child = grid;
+                AdminAccountsListBox.Items.Add(new ListBoxItem { Tag = acc, Content = card });
+            }
+        }
+
+        private void RenderAdminBroadcastsList()
+        {
+            AdminBroadcastsListBox.Items.Clear();
+            foreach (var note in _adminBroadcasts)
+            {
+                var card = new Border
+                {
+                    CornerRadius = new CornerRadius(10),
+                    Padding = new Thickness(10, 8, 10, 8),
+                    Background = _folderCardBgBrush,
+                    BorderBrush = _folderCardBorderBrush,
+                    BorderThickness = new Thickness(1)
+                };
+                card.Child = new TextBlock
+                {
+                    Text = note,
+                    Foreground = Brushes.White,
+                    FontSize = 12.5,
+                    TextWrapping = TextWrapping.Wrap
+                };
+                AdminBroadcastsListBox.Items.Add(new ListBoxItem { Tag = note, Content = card });
+            }
+        }
+
+        private void AdminSearchBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            RenderAdminAccountsList();
+        }
+
+        private async void BtnAdminRefresh_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadAdminDashboardAsync();
+        }
+
+        private void BtnAdminToVault_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_hasPersonalVault) return;
+            AdminDashboardGrid.Visibility = Visibility.Hidden;
+            FolderGrid.Visibility = Visibility.Visible;
+            if (_isAccountLocked)
+            {
+                ApplyAccountLockUI(true, _canShowUnlockInput);
+            }
+            else
+            {
+                ApplyAccountLockUI(false, false);
+                LoadTreeStructure();
+            }
+        }
+
+        private async void MenuAdminDashboard_Click(object sender, RoutedEventArgs e)
+        {
+            SettingsPopup.IsOpen = false;
+            if (!_isAdmin) return;
+            FolderGrid.Visibility = Visibility.Hidden;
+            PasswordGrid.Visibility = Visibility.Hidden;
+            AdminDashboardGrid.Visibility = Visibility.Visible;
+            await LoadAdminDashboardAsync();
+        }
+
+        private LockedAccountRecord? GetSelectedAdminAccount()
+        {
+            if (AdminAccountsListBox.SelectedItem is ListBoxItem item && item.Tag is LockedAccountRecord rec)
+            {
+                return rec;
+            }
+            ShowCustomMessage("Admin Dashboard", "Vui lòng chọn một tài khoản trong danh sách trước.");
+            return null;
+        }
+
+        private async void BtnAdminLock_Click(object sender, RoutedEventArgs e)
+        {
+            var rec = GetSelectedAdminAccount();
+            if (rec == null) return;
+
+            string reason = ShowInputDialog("Khóa tài khoản", $"Nhập lý do khóa tài khoản '{rec.Username}':", "Vi phạm quy tắc tiêu chuẩn cộng đồng");
+            if (string.IsNullOrWhiteSpace(reason)) return;
+
+            int nextLockCount = rec.IsCurrentlyLocked ? rec.LockCount : rec.LockCount + 1;
+            bool ok = await AdminLockManager.PushAccountStatusAsync(rec.Username, rec.Email, nextLockCount, true, "REASON|" + reason.Trim());
+            ShowCustomMessage("Admin Dashboard", ok ? $"Đã khóa tài khoản '{rec.Username}'." : "Cập nhật trạng thái thất bại.");
+            await LoadAdminDashboardAsync();
+        }
+
+        private async void BtnAdminIssueOtp_Click(object sender, RoutedEventArgs e)
+        {
+            var rec = GetSelectedAdminAccount();
+            if (rec == null) return;
+
+            string defaultOtp = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
+            string otp = ShowInputDialog("Cấp mã mở khóa (OTP)", $"Mã mở khóa cho '{rec.Username}':", defaultOtp);
+            if (string.IsNullOrWhiteSpace(otp)) return;
+
+            bool ok = await AdminLockManager.PushAccountStatusAsync(rec.Username, rec.Email, rec.LockCount, true, "APPROVED|" + otp.Trim());
+            if (ok)
+            {
+                try { Clipboard.SetText(otp.Trim()); } catch { }
+                ShowCustomMessage("Admin Dashboard", $"Đã cấp mã mở khóa '{otp.Trim()}' (đã copy vào Clipboard) cho '{rec.Username}'.");
+            }
+            else
+            {
+                ShowCustomMessage("Admin Dashboard", "Không thể cấp mã mở khóa.");
+            }
+            await LoadAdminDashboardAsync();
+        }
+
+        private async void BtnAdminUnlockDirect_Click(object sender, RoutedEventArgs e)
+        {
+            var rec = GetSelectedAdminAccount();
+            if (rec == null) return;
+
+            if (!ShowCustomConfirm("Mở khóa tài khoản", $"Bạn có chắc muốn mở khóa trực tiếp cho '{rec.Username}'?")) return;
+
+            bool ok = await AdminLockManager.PushAccountStatusAsync(rec.Username, rec.Email, rec.LockCount, false, string.Empty);
+            ShowCustomMessage("Admin Dashboard", ok ? $"Đã mở khóa tài khoản '{rec.Username}'." : "Không thể mở khóa tài khoản.");
+            await LoadAdminDashboardAsync();
+        }
+
+        private async void BtnAdminSendBroadcast_Click(object sender, RoutedEventArgs e)
+        {
+            string message = AdminBroadcastInput.Text.Trim();
+            if (string.IsNullOrWhiteSpace(message)) return;
+
+            var updated = new List<string>(_adminBroadcasts);
+            updated.Insert(0, message);
+            bool ok = await AdminLockManager.PushBroadcastNotificationsAsync(updated, _currentUserEmail);
+            if (ok)
+            {
+                AdminBroadcastInput.Clear();
+                await LoadAdminDashboardAsync();
+            }
+            else
+            {
+                ShowCustomMessage("Admin Dashboard", "Không thể gửi thông báo hệ thống.");
+            }
+        }
+
+        private async void BtnAdminDeleteBroadcast_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(AdminBroadcastsListBox.SelectedItem is ListBoxItem item) || !(item.Tag is string selectedNote))
+            {
+                ShowCustomMessage("Admin Dashboard", "Vui lòng chọn một thông báo để xóa.");
+                return;
+            }
+
+            if (!ShowCustomConfirm("Xóa thông báo", "Bạn có chắc muốn xóa thông báo này?")) return;
+
+            var updated = _adminBroadcasts.Where(n => n != selectedNote).ToList();
+            bool ok = await AdminLockManager.PushBroadcastNotificationsAsync(updated, _currentUserEmail);
+            if (ok)
+            {
+                await LoadAdminDashboardAsync();
+            }
+            else
+            {
+                ShowCustomMessage("Admin Dashboard", "Không thể xóa thông báo.");
+            }
+        }
         #endregion
 
         #region MÃ HÓA CẤP THẤP (AES + DEK)

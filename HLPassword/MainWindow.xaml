@@ -597,6 +597,10 @@
 									<DropShadowEffect BlurRadius="15" Color="#00A2FF" Opacity="0.6" ShadowDepth="5" Direction="315"/>
 								</Border.Effect>
 								<StackPanel Width="170">
+									<Button x:Name="BtnMenuAdminDashboard" Style="{StaticResource PopupMenuItem}" Click="MenuAdminDashboard_Click" Visibility="Collapsed">
+										<TextBlock Text="🛡️ Admin Dashboard"/>
+									</Button>
+									<Separator x:Name="SepMenuAdminDashboard" Background="#334DC9F6" Margin="5,2" Visibility="Collapsed"/>
 									<Button Style="{StaticResource PopupMenuItem}" Click="MenuNotification_Click">
 										<Grid Width="150">
 											<TextBlock Text="{DynamicResource T_MenuNotif}"/>
@@ -1047,6 +1051,153 @@
 						</Grid>
 					</StackPanel>
 				</Border>
+			</Grid>
+
+			<!-- ADMIN DASHBOARD -->
+			<Grid Name="AdminDashboardGrid" Margin="26,46,26,26" Visibility="Hidden">
+				<Grid.RowDefinitions>
+					<RowDefinition Height="Auto"/>
+					<RowDefinition Height="Auto"/>
+					<RowDefinition Height="*"/>
+				</Grid.RowDefinitions>
+
+				<!-- Header -->
+				<Grid Grid.Row="0" Margin="0,0,0,14">
+					<Grid.ColumnDefinitions>
+						<ColumnDefinition Width="*"/>
+						<ColumnDefinition Width="Auto"/>
+					</Grid.ColumnDefinitions>
+					<StackPanel Grid.Column="0">
+						<TextBlock Text="🛡️ ADMIN DASHBOARD" FontSize="26" Foreground="White" FontWeight="Bold">
+							<TextBlock.Effect>
+								<DropShadowEffect BlurRadius="16" ShadowDepth="0" Color="#00D4FF" Opacity="0.75"/>
+							</TextBlock.Effect>
+						</TextBlock>
+						<TextBlock Name="AdminSubtitleText" Text="Quản trị hệ thống HLPassword" Foreground="#88CCFF" FontSize="12.5" Margin="2,2,0,0"/>
+					</StackPanel>
+					<StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+						<Button Name="BtnAdminToVault" Content="📂 Vào Vault" Style="{StaticResource TextOnlyButton}" FontSize="13.5" Margin="0,0,14,0" Click="BtnAdminToVault_Click" Visibility="Collapsed"/>
+						<Button Name="BtnAdminRefresh" Content="🔄 Làm mới" Style="{StaticResource CustomButton}" Width="120" Height="36" FontSize="13.5" Click="BtnAdminRefresh_Click"/>
+					</StackPanel>
+				</Grid>
+
+				<!-- Stats Row -->
+				<Grid Grid.Row="1" Margin="0,0,0,14">
+					<Grid.ColumnDefinitions>
+						<ColumnDefinition Width="*"/>
+						<ColumnDefinition Width="12"/>
+						<ColumnDefinition Width="*"/>
+						<ColumnDefinition Width="12"/>
+						<ColumnDefinition Width="*"/>
+						<ColumnDefinition Width="12"/>
+						<ColumnDefinition Width="*"/>
+					</Grid.ColumnDefinitions>
+
+					<Border Grid.Column="0" Background="#CC0A1628" BorderBrush="#664DC9F6" BorderThickness="1.2" CornerRadius="12" Padding="14,10">
+						<StackPanel>
+							<TextBlock Text="Tổng tài khoản" Foreground="#88CCFF" FontSize="12"/>
+							<TextBlock Name="AdminStatTotal" Text="0" Foreground="White" FontSize="22" FontWeight="Bold" Margin="0,2,0,0"/>
+						</StackPanel>
+					</Border>
+					<Border Grid.Column="2" Background="#CC0A1628" BorderBrush="#6600E676" BorderThickness="1.2" CornerRadius="12" Padding="14,10">
+						<StackPanel>
+							<TextBlock Text="Đang hoạt động" Foreground="#88FFBB" FontSize="12"/>
+							<TextBlock Name="AdminStatActive" Text="0" Foreground="#00E676" FontSize="22" FontWeight="Bold" Margin="0,2,0,0"/>
+						</StackPanel>
+					</Border>
+					<Border Grid.Column="4" Background="#CC0A1628" BorderBrush="#66FF4D4D" BorderThickness="1.2" CornerRadius="12" Padding="14,10">
+						<StackPanel>
+							<TextBlock Text="Đang bị khóa" Foreground="#FF99AA" FontSize="12"/>
+							<TextBlock Name="AdminStatLocked" Text="0" Foreground="#FF4D6D" FontSize="22" FontWeight="Bold" Margin="0,2,0,0"/>
+						</StackPanel>
+					</Border>
+					<Border Grid.Column="6" Background="#CC0A1628" BorderBrush="#6600A2FF" BorderThickness="1.2" CornerRadius="12" Padding="14,10">
+						<StackPanel>
+							<TextBlock Text="Thông báo" Foreground="#88CCFF" FontSize="12"/>
+							<TextBlock Name="AdminStatBroadcasts" Text="0" Foreground="#4DC9F6" FontSize="22" FontWeight="Bold" Margin="0,2,0,0"/>
+						</StackPanel>
+					</Border>
+				</Grid>
+
+				<!-- Main Content: Accounts & Broadcasts -->
+				<Grid Grid.Row="2">
+					<Grid.ColumnDefinitions>
+						<ColumnDefinition Width="*"/>
+						<ColumnDefinition Width="14"/>
+						<ColumnDefinition Width="330"/>
+					</Grid.ColumnDefinitions>
+
+					<!-- Left: Account Moderation -->
+					<Border Grid.Column="0" Background="{StaticResource FolderFrameBackground}" BorderBrush="{StaticResource FolderBorderGradient}" BorderThickness="1.5" CornerRadius="14" Padding="14">
+						<Grid>
+							<Grid.RowDefinitions>
+								<RowDefinition Height="Auto"/>
+								<RowDefinition Height="*"/>
+								<RowDefinition Height="Auto"/>
+							</Grid.RowDefinitions>
+
+							<Grid Grid.Row="0" Margin="0,0,0,10">
+								<Grid.ColumnDefinitions>
+									<ColumnDefinition Width="Auto"/>
+									<ColumnDefinition Width="*"/>
+								</Grid.ColumnDefinitions>
+								<TextBlock Grid.Column="0" Text="👥 Tài khoản người dùng" Foreground="White" FontSize="15" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,12,0"/>
+								<TextBox Name="AdminSearchBox" Grid.Column="1" Height="34" Style="{StaticResource CustomTextBox}" FontSize="13" ToolTip="Tìm theo Username hoặc Email" TextChanged="AdminSearchBox_TextChanged"/>
+							</Grid>
+
+							<ListBox Name="AdminAccountsListBox" Grid.Row="1" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+								<ListBox.ItemContainerStyle>
+									<Style TargetType="ListBoxItem">
+										<Setter Property="Padding" Value="0"/>
+										<Setter Property="Margin" Value="0,3"/>
+										<Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+									</Style>
+								</ListBox.ItemContainerStyle>
+							</ListBox>
+
+							<StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+								<Button Name="BtnAdminLock" Content="🔒 Khóa" Height="36" Width="105" FontSize="13" Margin="0,0,8,0" Click="BtnAdminLock_Click" Style="{StaticResource CustomButton}"/>
+								<Button Name="BtnAdminIssueOtp" Content="🔑 Cấp OTP" Height="36" Width="120" FontSize="13" Margin="0,0,8,0" Click="BtnAdminIssueOtp_Click" Style="{StaticResource CustomButton}"/>
+								<Button Name="BtnAdminUnlockDirect" Content="✅ Mở khóa" Height="36" Width="115" FontSize="13" Click="BtnAdminUnlockDirect_Click" Style="{StaticResource CustomButton}"/>
+							</StackPanel>
+						</Grid>
+					</Border>
+
+					<!-- Right: Broadcast Notifications -->
+					<Border Grid.Column="2" Background="{StaticResource FolderFrameBackground}" BorderBrush="{StaticResource FolderBorderGradient}" BorderThickness="1.5" CornerRadius="14" Padding="14">
+						<Grid>
+							<Grid.RowDefinitions>
+								<RowDefinition Height="Auto"/>
+								<RowDefinition Height="Auto"/>
+								<RowDefinition Height="*"/>
+								<RowDefinition Height="Auto"/>
+							</Grid.RowDefinitions>
+
+							<TextBlock Grid.Row="0" Text="📢 Thông báo hệ thống" Foreground="White" FontSize="15" FontWeight="Bold" Margin="0,0,0,10"/>
+
+							<Grid Grid.Row="1" Margin="0,0,0,10">
+								<Grid.ColumnDefinitions>
+									<ColumnDefinition Width="*"/>
+									<ColumnDefinition Width="Auto"/>
+								</Grid.ColumnDefinitions>
+								<TextBox Name="AdminBroadcastInput" Grid.Column="0" Height="36" Style="{StaticResource CustomTextBox}" FontSize="13" ToolTip="Nhập nội dung thông báo mới"/>
+								<Button Name="BtnAdminSendBroadcast" Grid.Column="1" Content="Gửi" Width="64" Height="36" Margin="8,0,0,0" FontSize="13" Style="{StaticResource CustomButton}" Click="BtnAdminSendBroadcast_Click"/>
+							</Grid>
+
+							<ListBox Name="AdminBroadcastsListBox" Grid.Row="2" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+								<ListBox.ItemContainerStyle>
+									<Style TargetType="ListBoxItem">
+										<Setter Property="Padding" Value="0"/>
+										<Setter Property="Margin" Value="0,3"/>
+										<Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+									</Style>
+								</ListBox.ItemContainerStyle>
+							</ListBox>
+
+							<Button Name="BtnAdminDeleteBroadcast" Grid.Row="3" Content="🗑️ Xóa thông báo đã chọn" Height="34" Margin="0,10,0,0" FontSize="12.5" Style="{StaticResource TextOnlyButton}" Foreground="#FF8899" Click="BtnAdminDeleteBroadcast_Click"/>
+						</Grid>
+					</Border>
+				</Grid>
 			</Grid>
 
 			<!-- VERSION INFO 2.2.19 beta -->

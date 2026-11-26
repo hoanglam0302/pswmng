@@ -45,6 +45,51 @@ namespace HLPassword
             return "Vi phạm quy tắc tiêu chuẩn cộng đồng";
         }
 
+        public static async Task<(List<LockedAccountRecord> Accounts, List<string> Broadcasts)> GetAllAdminDataAsync()
+        {
+            string json = await _http.GetStringAsync(GoogleScriptUrl);
+            var records = JsonSerializer.Deserialize<List<LockedAccountRecord>>(json) ?? new List<LockedAccountRecord>();
+
+            var broadcasts = new List<string>();
+            var broadcastRec = records.FirstOrDefault(r => r.Username.Equals(BroadcastUserKey, StringComparison.OrdinalIgnoreCase));
+            if (broadcastRec != null && !string.IsNullOrWhiteSpace(broadcastRec.UnlockOtp))
+            {
+                try
+                {
+                    broadcasts = JsonSerializer.Deserialize<List<string>>(broadcastRec.UnlockOtp) ?? new List<string>();
+                }
+                catch { }
+            }
+
+            var accounts = records
+                .Where(r => !r.Username.Equals(BroadcastUserKey, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(r.Username))
+                .OrderByDescending(r => r.IsCurrentlyLocked)
+                .ThenBy(r => r.Username, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return (accounts, broadcasts);
+        }
+
+        public static async Task<bool> PushBroadcastNotificationsAsync(List<string> notifications, string adminEmail)
+        {
+            try
+            {
+                var record = new LockedAccountRecord
+                {
+                    Username = BroadcastUserKey,
+                    Email = adminEmail,
+                    LockCount = 0,
+                    IsCurrentlyLocked = false,
+                    UnlockOtp = JsonSerializer.Serialize(notifications),
+                    LastLockedTime = DateTime.Now.ToString("O")
+                };
+                string json = JsonSerializer.Serialize(record);
+                using var response = await _http.PostAsync(GoogleScriptUrl, new StringContent(json, Encoding.UTF8, "application/json"));
+                return response.IsSuccessStatusCode;
+            }
+            catch { return false; }
+        }
+
         public static async Task<(LockedAccountRecord? Account, List<string> Broadcasts)> GetStatusAndBroadcastsAsync(string username)
         {
             try
@@ -85,7 +130,7 @@ namespace HLPassword
             return new List<string>();
         }
 
-        public static async Task PushAccountStatusAsync(string username, string email, int lockCount, bool isLocked, string unlockOtp = "")
+        public static async Task<bool> PushAccountStatusAsync(string username, string email, int lockCount, bool isLocked, string unlockOtp = "")
         {
             try
             {
@@ -99,9 +144,10 @@ namespace HLPassword
                     LastLockedTime = DateTime.Now.ToString("O")
                 };
                 string json = JsonSerializer.Serialize(record);
-                await _http.PostAsync(GoogleScriptUrl, new StringContent(json, Encoding.UTF8, "application/json"));
+                using var response = await _http.PostAsync(GoogleScriptUrl, new StringContent(json, Encoding.UTF8, "application/json"));
+                return response.IsSuccessStatusCode;
             }
-            catch { }
+            catch { return false; }
         }
 
         public static async Task<LockedAccountRecord?> GetAccountStatusAsync(string username)
