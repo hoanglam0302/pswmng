@@ -81,55 +81,79 @@ namespace HLPassword
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromMinutes(10));
-            using TcpClient callbackClient = await listener.AcceptTcpClientAsync(timeout.Token);
-            string requestLine = await ReadRequestLineAsync(callbackClient.GetStream(), timeout.Token);
-            Uri callbackRequest = new Uri(redirectUri, requestLine.Split(' ')[1]);
 
             string expectedPath = redirectUri.AbsolutePath;
-            if (!string.Equals(callbackRequest.AbsolutePath, expectedPath, StringComparison.Ordinal))
+            TcpClient callbackClient;
+            Uri callbackRequest;
+            while (true)
             {
-                await WriteCallbackResponseAsync(callbackClient.GetStream(), "Invalid sign-in callback.", timeout.Token);
-                throw new InvalidOperationException("The Google sign-in callback did not match the requested callback.");
+                TcpClient client = await listener.AcceptTcpClientAsync(timeout.Token);
+                string? requestLine = await ReadRequestLineAsync(client.GetStream(), timeout.Token);
+                if (requestLine == null)
+                {
+                    client.Dispose();
+                    continue;
+                }
+
+                callbackRequest = new Uri(redirectUri, requestLine);
+                if (string.Equals(callbackRequest.AbsolutePath, "/favicon.ico", StringComparison.OrdinalIgnoreCase))
+                {
+                    await WriteNotFoundResponseAsync(client.GetStream(), timeout.Token);
+                    client.Dispose();
+                    continue;
+                }
+
+                callbackClient = client;
+                break;
             }
 
-            Dictionary<string, string> callbackParameters = ParseQuery(callbackRequest.Query);
-            if (callbackParameters.TryGetValue("error_description", out string? errorDescription) ||
-                callbackParameters.TryGetValue("error", out errorDescription))
+            using (callbackClient)
             {
-                await WriteCallbackResponseAsync(callbackClient.GetStream(), "Sign-in was not completed. You can close this window.", timeout.Token);
-                throw new InvalidOperationException("Google sign-in failed: " + WebUtility.UrlDecode(errorDescription));
-            }
+                if (!string.Equals(callbackRequest.AbsolutePath, expectedPath, StringComparison.Ordinal))
+                {
+                    await WriteCallbackResponseAsync(callbackClient.GetStream(), "Invalid sign-in callback.", timeout.Token);
+                    throw new InvalidOperationException("The Google sign-in callback did not match the requested callback.");
+                }
 
-            if (!callbackParameters.TryGetValue("code", out string? authorizationCode))
-            {
-                await WriteCallbackResponseAsync(callbackClient.GetStream(), "Sign-in did not return an authorization code. You can close this window.", timeout.Token);
-                throw new InvalidOperationException("Google sign-in did not return an authorization code.");
-            }
+                Dictionary<string, string> callbackParameters = ParseQuery(callbackRequest.Query);
+                if (callbackParameters.TryGetValue("error_description", out string? errorDescription) ||
+                    callbackParameters.TryGetValue("error", out errorDescription))
+                {
+                    await WriteCallbackResponseAsync(callbackClient.GetStream(), "Sign-in was not completed. You can close this window.", timeout.Token);
+                    throw new InvalidOperationException("Google sign-in failed: " + WebUtility.UrlDecode(errorDescription));
+                }
 
-            try
-            {
-                using JsonDocument tokenResponse = await PostJsonAsync(
-                    "/auth/v1/token?grant_type=pkce",
-                    new { auth_code = authorizationCode, code_verifier = verifier },
-                    null,
-                    timeout.Token);
+                if (!callbackParameters.TryGetValue("code", out string? authorizationCode))
+                {
+                    await WriteCallbackResponseAsync(callbackClient.GetStream(), "Sign-in did not return an authorization code. You can close this window.", timeout.Token);
+                    throw new InvalidOperationException("Google sign-in did not return an authorization code.");
+                }
 
-                _session = ParseSession(tokenResponse.RootElement);
-            }
-            catch (Exception ex)
-            {
+                try
+                {
+                    using JsonDocument tokenResponse = await PostJsonAsync(
+                        "/auth/v1/token?grant_type=pkce",
+                        new { auth_code = authorizationCode, code_verifier = verifier },
+                        null,
+                        timeout.Token);
+
+                    _session = ParseSession(tokenResponse.RootElement);
+                }
+                catch (Exception ex)
+                {
+                    await WriteCallbackResponseAsync(
+                        callbackClient.GetStream(),
+                        "Sign-in could not be completed. Return to HLPassword and try again.",
+                        timeout.Token);
+                    throw new InvalidOperationException("Supabase could not complete the Google sign-in: " + ex.Message, ex);
+                }
+
                 await WriteCallbackResponseAsync(
                     callbackClient.GetStream(),
-                    "Sign-in could not be completed. Return to HLPassword and try again.",
+                    "HLPassword sign-in complete. Return to the app to continue.",
                     timeout.Token);
-                throw new InvalidOperationException("Supabase could not complete the Google sign-in. Return to the app and try again.", ex);
+                return _session;
             }
-
-            await WriteCallbackResponseAsync(
-                callbackClient.GetStream(),
-                "HLPassword sign-in complete. Return to the app to continue.",
-                timeout.Token);
-            return _session;
         }
 
         public async Task<SupabaseProfile?> GetProfileAsync(CancellationToken cancellationToken = default)
@@ -164,6 +188,29 @@ namespace HLPassword
             using HttpResponseMessage response = await Http.SendAsync(request, cancellationToken);
             string body = await response.Content.ReadAsStringAsync(cancellationToken);
             EnsureSuccess(response, body);
+        }
+
+        public async Task<Dictionary<string, string>> GetDocumentsAsync(IEnumerable<string> documentKeys, CancellationToken cancellationToken = default)
+        {
+            await EnsureFreshSessionAsync(cancellationToken);
+            string inClause = string.Join(",", documentKeys.Select(k => Uri.EscapeDataString(k)));
+            string query = $"select=document_key,payload&document_key=in.({inClause})";
+            using HttpRequestMessage request = CreateRequest(HttpMethod.Get, "/rest/v1/user_documents?" + query, _session!.AccessToken);
+            using HttpResponseMessage response = await Http.SendAsync(request, cancellationToken);
+            string body = await response.Content.ReadAsStringAsync(cancellationToken);
+            EnsureSuccess(response, body);
+
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            using JsonDocument rows = JsonDocument.Parse(body);
+            foreach (JsonElement row in rows.RootElement.EnumerateArray())
+            {
+                string? key = row.GetProperty("document_key").GetString();
+                if (!string.IsNullOrEmpty(key))
+                {
+                    result[key] = row.GetProperty("payload").GetRawText();
+                }
+            }
+            return result;
         }
 
         public async Task<string?> GetDocumentAsync(string documentKey, CancellationToken cancellationToken = default)
@@ -324,7 +371,7 @@ namespace HLPassword
             throw new InvalidOperationException(message);
         }
 
-        private static async Task<string> ReadRequestLineAsync(NetworkStream stream, CancellationToken cancellationToken)
+        private static async Task<string?> ReadRequestLineAsync(NetworkStream stream, CancellationToken cancellationToken)
         {
             var buffer = new byte[4096];
             using var received = new MemoryStream();
@@ -333,7 +380,7 @@ namespace HLPassword
                 int count = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
                 if (count == 0)
                 {
-                    break;
+                    return null;
                 }
 
                 received.Write(buffer, 0, count);
@@ -342,15 +389,23 @@ namespace HLPassword
                 if (lineEnd >= 0)
                 {
                     string line = text.Substring(0, lineEnd);
-                    if (line.StartsWith("GET ", StringComparison.Ordinal) && line.EndsWith(" HTTP/1.1", StringComparison.Ordinal))
+                    string[] parts = line.Split(' ');
+                    if (parts.Length >= 3 && string.Equals(parts[0], "GET", StringComparison.Ordinal) && parts[2].StartsWith("HTTP/", StringComparison.Ordinal))
                     {
-                        return line.Substring(4, line.Length - 13);
+                        return parts[1];
                     }
                     break;
                 }
             }
 
             throw new InvalidOperationException("The local sign-in callback request was invalid.");
+        }
+
+        private static async Task WriteNotFoundResponseAsync(NetworkStream stream, CancellationToken cancellationToken)
+        {
+            byte[] header = Encoding.ASCII.GetBytes("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            await stream.WriteAsync(header, cancellationToken);
+            await stream.FlushAsync(cancellationToken);
         }
 
         private static async Task WriteCallbackResponseAsync(NetworkStream stream, string message, CancellationToken cancellationToken)

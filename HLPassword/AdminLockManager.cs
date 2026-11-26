@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -25,7 +25,7 @@ namespace HLPassword
         private const string ReasonPrefix = "REASON|";
         private const string BroadcastUserKey = "__BROADCAST_NOTIFICATIONS__";
 
-        private static readonly HttpClient _http = new HttpClient();
+        private static readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
         public static bool IsAdminApprovedForUnlock(LockedAccountRecord? rec)
         {
@@ -43,6 +43,28 @@ namespace HLPassword
                 if (!string.IsNullOrEmpty(r)) return r;
             }
             return "Vi phạm quy tắc tiêu chuẩn cộng đồng";
+        }
+
+        public static async Task<(LockedAccountRecord? Account, List<string> Broadcasts)> GetStatusAndBroadcastsAsync(string username)
+        {
+            try
+            {
+                string json = await _http.GetStringAsync(GoogleScriptUrl);
+                var records = JsonSerializer.Deserialize<List<LockedAccountRecord>>(json) ?? new List<LockedAccountRecord>();
+
+                var account = records.FirstOrDefault(x => x.Username.Equals(username, StringComparison.OrdinalIgnoreCase));
+                var broadcasts = new List<string>();
+                var broadcastRec = records.FirstOrDefault(r => r.Username.Equals(BroadcastUserKey, StringComparison.OrdinalIgnoreCase));
+                if (broadcastRec != null && !string.IsNullOrWhiteSpace(broadcastRec.UnlockOtp))
+                {
+                    broadcasts = JsonSerializer.Deserialize<List<string>>(broadcastRec.UnlockOtp) ?? new List<string>();
+                }
+                return (account, broadcasts);
+            }
+            catch
+            {
+                return (null, new List<string>());
+            }
         }
 
         // Lấy danh sách thông báo do Admin đẩy từ hệ thống

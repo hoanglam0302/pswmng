@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -135,10 +135,15 @@ namespace HLPassword
             "xamloz", "xamlon", "matlon", "daubuoi", "daulon", "ccmm", "dkmm"
         };
 
-        private static readonly string[] _shortBannedWords = new[]
+        private static readonly HashSet<string> _shortBannedWords = new(StringComparer.Ordinal)
         {
             "cac", "lon", "du", "di", "dit", "diem", "cave", "dm", "dcm", "dkm", "dmm", "vcl", "vl", "vkl", "clm", "cc", "ml", "sml"
         };
+
+        private static readonly Regex _nonLetterRegex = new(@"[^\p{L}]", RegexOptions.Compiled);
+        private static readonly Regex _repeatedCharRegex = new(@"(.)\1+", RegexOptions.Compiled);
+        private static readonly Regex _nonAsciiLowerRegex = new(@"[^a-z]", RegexOptions.Compiled);
+        private static readonly Regex _nonAsciiLowerSplitRegex = new(@"[^a-z]+", RegexOptions.Compiled);
 
         private string RemoveDiacritics(string text)
         {
@@ -174,8 +179,8 @@ namespace HLPassword
 
             string lower = input.ToLowerInvariant();
 
-            string onlyLettersWithDiacritics = Regex.Replace(lower, @"[^\p{L}]", "");
-            string collapsedWithDiacritics = Regex.Replace(onlyLettersWithDiacritics, @"(.)\1+", "$1");
+            string onlyLettersWithDiacritics = _nonLetterRegex.Replace(lower, "");
+            string collapsedWithDiacritics = _repeatedCharRegex.Replace(onlyLettersWithDiacritics, "$1");
 
             foreach (var bad in _vietnameseDiacriticBanned)
             {
@@ -186,8 +191,8 @@ namespace HLPassword
             string leetNormalized = NormalizeLeetspeak(lower);
             string noDiacritics = RemoveDiacritics(leetNormalized);
 
-            string stripped = Regex.Replace(noDiacritics, @"[^a-z]", "");
-            string collapsed = Regex.Replace(stripped, @"(.)\1+", "$1");
+            string stripped = _nonAsciiLowerRegex.Replace(noDiacritics, "");
+            string collapsed = _repeatedCharRegex.Replace(stripped, "$1");
 
             foreach (var bad in _strictBannedWords)
             {
@@ -195,17 +200,14 @@ namespace HLPassword
                     return true;
             }
 
-            foreach (var bad in _shortBannedWords)
-            {
-                if (stripped == bad || collapsed == bad)
-                    return true;
-            }
+            if (_shortBannedWords.Contains(stripped) || _shortBannedWords.Contains(collapsed))
+                return true;
 
-            string[] tokens = Regex.Split(noDiacritics, @"[^a-z]+");
+            string[] tokens = _nonAsciiLowerSplitRegex.Split(noDiacritics);
             foreach (var token in tokens)
             {
                 if (string.IsNullOrEmpty(token)) continue;
-                string collapsedToken = Regex.Replace(token, @"(.)\1+", "$1");
+                string collapsedToken = _repeatedCharRegex.Replace(token, "$1");
                 if (_shortBannedWords.Contains(token) || _shortBannedWords.Contains(collapsedToken))
                     return true;
             }
@@ -237,7 +239,7 @@ namespace HLPassword
         {
             if (_remoteLockTimer == null)
             {
-                _remoteLockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+                _remoteLockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
                 _remoteLockTimer.Tick += async (s, e) => await CheckRemoteLockTickAsync();
             }
             if (!_remoteLockTimer.IsEnabled) _remoteLockTimer.Start();
@@ -248,10 +250,8 @@ namespace HLPassword
             _remoteLockTimer?.Stop();
         }
 
-        // Đồng bộ thông báo mới do Admin gửi vào hộp thư của người dùng
-        private async Task SyncBroadcastNotificationsAsync(bool markAsRead = false)
+        private void ApplyBroadcastList(List<string> broadcastList, bool markAsRead)
         {
-            var broadcastList = await AdminLockManager.GetBroadcastNotificationsAsync();
             if (broadcastList.Count == 0) return;
 
             foreach (var note in broadcastList)
@@ -276,16 +276,23 @@ namespace HLPassword
             }
         }
 
+        // Đồng bộ thông báo mới do Admin gửi vào hộp thư của người dùng
+        private async Task SyncBroadcastNotificationsAsync(bool markAsRead = false)
+        {
+            var broadcastList = await AdminLockManager.GetBroadcastNotificationsAsync();
+            ApplyBroadcastList(broadcastList, markAsRead);
+        }
+
         private async Task CheckRemoteLockTickAsync()
         {
             if (string.IsNullOrEmpty(_currentUsername)) return;
 
-            // Cập nhật thông báo mới từ Admin theo thời gian thực
-            await SyncBroadcastNotificationsAsync(false);
+            // Gộp 1 request duy nhất để lấy cả trạng thái khóa và thông báo broadcast
+            var (rec, broadcastList) = await AdminLockManager.GetStatusAndBroadcastsAsync(_currentUsername);
+            ApplyBroadcastList(broadcastList, false);
 
             if (_isAccountLocked) return;
 
-            var rec = await AdminLockManager.GetAccountStatusAsync(_currentUsername);
             if (rec != null && rec.IsCurrentlyLocked)
             {
                 _isAccountLocked = true;
@@ -552,8 +559,7 @@ namespace HLPassword
                 this.Resources["T_NoAccount"] = "Don't have an account? Register";
                 this.Resources["T_ForgotPass"] = "Forgot password?";
                 this.Resources["T_RegTitle"] = "REGISTER ACCOUNT";
-                this.Resources["T_RegEmail"] = "Email (Gmail Only)";
-                this.Resources["T_RegBtn"] = "CREATE ACCOUNT";
+                this.Resources["T_RegBtn"] = "Sign up with Google";
                 this.Resources["T_BackLogin"] = "⬅ Back to login";
                 this.Resources["T_FindAccTitle"] = "FIND ACCOUNT";
                 this.Resources["T_FindAccDesc"] = "Enter registered Gmail to find your account.";
@@ -595,8 +601,7 @@ namespace HLPassword
                 this.Resources["T_NoAccount"] = "アカウントを持っていませんか？登録";
                 this.Resources["T_ForgotPass"] = "パスワードを忘れた？";
                 this.Resources["T_RegTitle"] = "アカウント登録";
-                this.Resources["T_RegEmail"] = "メール (Gmailのみ)";
-                this.Resources["T_RegBtn"] = "アカウント作成";
+                this.Resources["T_RegBtn"] = "Googleで登録";
                 this.Resources["T_BackLogin"] = "⬅ ログインに戻る";
                 this.Resources["T_FindAccTitle"] = "アカウント検索";
                 this.Resources["T_FindAccDesc"] = "登録したGmailを入力してください。";
@@ -638,8 +643,7 @@ namespace HLPassword
                 this.Resources["T_NoAccount"] = "Pas de compte ? S'inscrire";
                 this.Resources["T_ForgotPass"] = "Mot de passe oublié ?";
                 this.Resources["T_RegTitle"] = "CRÉER UN COMPTE";
-                this.Resources["T_RegEmail"] = "Email (Gmail Uniquement)";
-                this.Resources["T_RegBtn"] = "CRÉER LE COMPTE";
+                this.Resources["T_RegBtn"] = "S'inscrire avec Google";
                 this.Resources["T_BackLogin"] = "⬅ Retour à la connexion";
                 this.Resources["T_FindAccTitle"] = "TROUVER LE COMPTE";
                 this.Resources["T_FindAccDesc"] = "Entrez le Gmail enregistré pour trouver le compte.";
@@ -681,8 +685,7 @@ namespace HLPassword
                 this.Resources["T_NoAccount"] = "Chưa có tài khoản? Đăng ký";
                 this.Resources["T_ForgotPass"] = "Quên mật khẩu?";
                 this.Resources["T_RegTitle"] = "ĐĂNG KÝ TÀI KHOẢN";
-                this.Resources["T_RegEmail"] = "Email (Chỉ dùng Gmail)";
-                this.Resources["T_RegBtn"] = "TẠO TÀI KHOẢN";
+                this.Resources["T_RegBtn"] = "Đăng ký với Google";
                 this.Resources["T_BackLogin"] = "⬅ Quay lại đăng nhập";
                 this.Resources["T_FindAccTitle"] = "TÌM TÀI KHOẢN";
                 this.Resources["T_FindAccDesc"] = "Nhập Gmail đã đăng ký để tìm tài khoản.";
@@ -1066,20 +1069,16 @@ namespace HLPassword
         private void SwitchToLogin_Click(object sender, RoutedEventArgs e) => SwitchToPanel(PnlLogin);
         private void SwitchToRegister_Click(object sender, RoutedEventArgs e) => SwitchToPanel(PnlRegister);
 
-        private async Task UpdateLoginProgress(int targetValue, int delayMs = 15)
+        private Task UpdateLoginProgress(int targetValue)
         {
-            while (BottomProgressBar.Value < targetValue)
-            {
-                BottomProgressBar.Value += 1;
-                BottomProgressText.Text = $"{BottomProgressBar.Value}%";
-                await Task.Delay(delayMs);
-            }
+            BottomProgressBar.Value = targetValue;
+            BottomProgressText.Text = $"{targetValue}%";
+            return Task.CompletedTask;
         }
 
         private async void AuthRegister_Click(object? sender, RoutedEventArgs? e)
         {
             string username = RegUsername.Text.Trim();
-            string email = RegEmail.Text.Trim();
 
             if (ContainsProfanity(username))
             {
@@ -1091,21 +1090,18 @@ namespace HLPassword
                 ShowCustomMessage("Error", "Username phải dài tối thiểu 8 ký tự, bao gồm ít nhất 1 chữ IN HOA và 1 chữ số (chỉ chứa chữ, số, _, -)!");
                 return;
             }
-            if (string.IsNullOrWhiteSpace(email) || !email.EndsWith("@gmail.com", StringComparison.OrdinalIgnoreCase))
-            {
-                ShowCustomMessage("Error", "Vui lòng nhập đúng địa chỉ Gmail (@gmail.com)!");
-                return;
-            }
             EnableAuthForm(false);
             BottomProgressContainer.Visibility = Visibility.Visible;
+            BottomProgressBar.Value = 0;
+            BottomProgressText.Text = "0%";
             try
             {
                 await UpdateLoginProgress(20);
                 _supabaseClient ??= new SupabaseClient(App.Supabase);
                 SupabaseSession session = await _supabaseClient.SignInWithGoogleAsync();
-                if (!string.Equals(session.Email, email, StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(session.Email))
                 {
-                    throw new InvalidOperationException("Gmail đăng nhập Google phải trùng với Gmail khai báo khi đăng ký.");
+                    throw new InvalidOperationException("Tài khoản Google không cung cấp địa chỉ Email.");
                 }
 
                 await UpdateLoginProgress(60);
@@ -1136,7 +1132,6 @@ namespace HLPassword
                 await UpdateLoginProgress(100);
                 LoginSuccess();
                 RegUsername.Clear();
-                RegEmail.Clear();
             }
             catch (Exception ex)
             {
@@ -1249,10 +1244,13 @@ namespace HLPassword
 
         private async Task SyncCloudToMemory(string safeUsername)
         {
-            string? notifState = await CloudGet($"Vaults/{safeUsername}/{_notificationVersion}");
+            var docs = await (_supabaseClient ?? throw new InvalidOperationException("Sign in with Google before accessing vault data."))
+                .GetDocumentsAsync(new[] { _notificationVersion, "Tree", "Passwords" });
+
+            docs.TryGetValue(_notificationVersion, out string? notifState);
             _hasUnreadNotifications = (notifState != "true");
 
-            string? cloudTree = await CloudGet($"Vaults/{safeUsername}/Tree");
+            docs.TryGetValue("Tree", out string? cloudTree);
             string rawStr = string.Empty;
             if (cloudTree != null)
             {
@@ -1283,7 +1281,7 @@ namespace HLPassword
                 TreeStructure = new List<FolderNode>();
             }
 
-            string? cloudPasswords = await CloudGet($"Vaults/{safeUsername}/Passwords");
+            docs.TryGetValue("Passwords", out string? cloudPasswords);
             if (cloudPasswords != null)
             {
                 try
@@ -1364,6 +1362,14 @@ namespace HLPassword
             _currentUsername = ""; UserEmailText.Text = ""; BtnSettingsContainer.Visibility = Visibility.Hidden;
             TreeStructure.Clear();
             _inMemoryPasswords.Clear();
+
+            BgAnimationCanvas.Opacity = 0;
+            try
+            {
+                var floatingAnimation = (System.Windows.Media.Animation.Storyboard)this.BgAnimationCanvas.FindResource("FloatingAnimation");
+                floatingAnimation.Stop(BgAnimationCanvas);
+            }
+            catch { }
 
             FolderGrid.Visibility = Visibility.Hidden; PasswordGrid.Visibility = Visibility.Hidden;
             HomeGrid.Visibility = Visibility.Visible;
@@ -1499,20 +1505,16 @@ namespace HLPassword
             return new PasswordData();
         }
 
-        private async void SavePasswordData(string id, PasswordData data)
+        private async Task SavePasswordDataAsync(string id, PasswordData data)
         {
-            try
-            {
-                string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
-                string encData = EncryptDataString(json);
+            string json = JsonSerializer.Serialize(data);
+            string encData = EncryptDataString(json);
 
-                _inMemoryPasswords[id] = encData;
+            _inMemoryPasswords[id] = encData;
 
-                string safeUsername = GetSafeKey(_currentUsername);
-                string allPasswordsJson = JsonSerializer.Serialize(_inMemoryPasswords);
-                await CloudPut($"Vaults/{safeUsername}/Passwords", allPasswordsJson);
-            }
-            catch (Exception ex) { LogError(ex); }
+            string safeUsername = GetSafeKey(_currentUsername);
+            string allPasswordsJson = JsonSerializer.Serialize(_inMemoryPasswords);
+            await CloudPut($"Vaults/{safeUsername}/Passwords", allPasswordsJson);
         }
 
         private async void DeleteDataFile(string id)
@@ -1534,7 +1536,7 @@ namespace HLPassword
         {
             try
             {
-                string json = JsonSerializer.Serialize(TreeStructure, new JsonSerializerOptions { WriteIndented = true });
+                string json = JsonSerializer.Serialize(TreeStructure);
                 string encTree = EncryptDataString(json);
 
                 string safeUsername = GetSafeKey(_currentUsername);
@@ -1580,6 +1582,46 @@ namespace HLPassword
             UpdateBreadcrumbs();
         }
 
+        private static readonly Brush _breadcrumbActiveBrush = CreateFrozenBrush("#FFFFFF");
+        private static readonly Brush _breadcrumbLinkBrush = CreateFrozenBrush("#4DC9F6");
+        private static readonly Brush _breadcrumbArrowBrush = CreateFrozenBrush("#005BFF");
+        private static readonly Brush _folderCardBgBrush = CreateFrozenBrush("#CC132645");
+        private static readonly Brush _folderGroupTextBrush = CreateFrozenBrush("#66D9FF");
+        private static readonly Brush _folderDataTextBrush = CreateFrozenBrush("#FFFFFF");
+        private static readonly Brush _folderCardBorderBrush = CreateFrozenFolderBorderBrush();
+        private static readonly System.Windows.Media.Effects.DropShadowEffect _breadcrumbGlowEffect = CreateFrozenGlow("#00A2FF", 12, 0.8);
+        private static readonly System.Windows.Media.Effects.DropShadowEffect _arrowGlowEffect = CreateFrozenGlow("#005BFF", 8, 1.0);
+
+        private static SolidColorBrush CreateFrozenBrush(string hex)
+        {
+            var b = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex));
+            b.Freeze();
+            return b;
+        }
+
+        private static LinearGradientBrush CreateFrozenFolderBorderBrush()
+        {
+            var b = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
+            b.GradientStops.Add(new GradientStop((Color)ColorConverter.ConvertFromString("#664DC9F6"), 0.0));
+            b.GradientStops.Add(new GradientStop((Color)ColorConverter.ConvertFromString("#4400A2FF"), 0.5));
+            b.GradientStops.Add(new GradientStop((Color)ColorConverter.ConvertFromString("#66005BFF"), 1.0));
+            b.Freeze();
+            return b;
+        }
+
+        private static System.Windows.Media.Effects.DropShadowEffect CreateFrozenGlow(string hex, double blur, double opacity)
+        {
+            var e = new System.Windows.Media.Effects.DropShadowEffect
+            {
+                BlurRadius = blur,
+                ShadowDepth = 0,
+                Color = (Color)ColorConverter.ConvertFromString(hex),
+                Opacity = opacity
+            };
+            e.Freeze();
+            return e;
+        }
+
         private void UpdateBreadcrumbs()
         {
             BreadcrumbPanel.Children.Clear();
@@ -1594,13 +1636,13 @@ namespace HLPassword
             {
                 var node = path[i];
                 bool isLast = (i == path.Count - 1);
-                var tb = new TextBlock { Text = node == null ? "Home" : node.Name, Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(isLast ? "#FFFFFF" : "#4DC9F6")), FontSize = 18, FontWeight = isLast ? FontWeights.Bold : FontWeights.SemiBold, Cursor = isLast ? Cursors.Arrow : Cursors.Hand, Tag = node, AllowDrop = !isLast, Padding = new Thickness(5) };
-                tb.Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 12, ShadowDepth = 0, Color = (Color)ColorConverter.ConvertFromString("#00A2FF"), Opacity = 0.8 };
+                var tb = new TextBlock { Text = node == null ? "Home" : node.Name, Foreground = isLast ? _breadcrumbActiveBrush : _breadcrumbLinkBrush, FontSize = 18, FontWeight = isLast ? FontWeights.Bold : FontWeights.SemiBold, Cursor = isLast ? Cursors.Arrow : Cursors.Hand, Tag = node, AllowDrop = !isLast, Padding = new Thickness(5) };
+                tb.Effect = _breadcrumbGlowEffect;
 
                 if (!isLast)
                 {
                     tb.MouseEnter += (s, e) => tb.Foreground = Brushes.White;
-                    tb.MouseLeave += (s, e) => tb.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#4DC9F6"));
+                    tb.MouseLeave += (s, e) => tb.Foreground = _breadcrumbLinkBrush;
                     tb.MouseLeftButtonDown += (s, e) => NavigateToBreadcrumb(node);
                     tb.DragOver += Breadcrumb_DragOver;
                     tb.Drop += Breadcrumb_Drop;
@@ -1610,8 +1652,8 @@ namespace HLPassword
 
                 if (!isLast)
                 {
-                    var arrow = new TextBlock { Text = " > ", Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#005BFF")), FontSize = 18, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(5, 0, 5, 0) };
-                    arrow.Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 8, ShadowDepth = 0, Color = (Color)ColorConverter.ConvertFromString("#005BFF") };
+                    var arrow = new TextBlock { Text = " > ", Foreground = _breadcrumbArrowBrush, FontSize = 18, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(5, 0, 5, 0) };
+                    arrow.Effect = _arrowGlowEffect;
                     BreadcrumbPanel.Children.Add(arrow);
                 }
             }
@@ -1659,17 +1701,17 @@ namespace HLPassword
         {
             var item = new ListBoxItem();
             item.Tag = node;
-            var border = new Border { CornerRadius = new CornerRadius(20), Padding = new Thickness(15, 10, 15, 10), Margin = new Thickness(0), Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#E6FFF2F6")), BorderThickness = new Thickness(1.5), SnapsToDevicePixels = true, UseLayoutRounding = true, HorizontalAlignment = HorizontalAlignment.Stretch };
-            var metallicBrush = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
-            metallicBrush.GradientStops.Add(new GradientStop((Color)ColorConverter.ConvertFromString("#FFFFFF"), 0.0));
-            metallicBrush.GradientStops.Add(new GradientStop((Color)ColorConverter.ConvertFromString("#88CCFF"), 0.5));
-            metallicBrush.GradientStops.Add(new GradientStop((Color)ColorConverter.ConvertFromString("#005BFF"), 1.0));
-            border.BorderBrush = metallicBrush;
+            var border = new Border { CornerRadius = new CornerRadius(12), Padding = new Thickness(15, 11, 15, 11), Margin = new Thickness(0), Background = _folderCardBgBrush, BorderThickness = new Thickness(1.2), SnapsToDevicePixels = true, UseLayoutRounding = true, HorizontalAlignment = HorizontalAlignment.Stretch, BorderBrush = _folderCardBorderBrush };
 
-            var textBlock = new TextBlock { Text = (node.IsGroup ? "📂 " : "📄 ") + node.Name, FontSize = 16, FontWeight = FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center };
-            string colorHex = node.ColorHex;
-            if (string.IsNullOrEmpty(colorHex)) colorHex = node.IsGroup ? "#005BFF" : "#333333";
-            textBlock.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(colorHex));
+            var textBlock = new TextBlock { Text = (node.IsGroup ? "📂 " : "📄 ") + node.Name, FontSize = 15, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+            if (string.IsNullOrEmpty(node.ColorHex))
+            {
+                textBlock.Foreground = node.IsGroup ? _folderGroupTextBrush : _folderDataTextBrush;
+            }
+            else
+            {
+                textBlock.Foreground = CreateFrozenBrush(node.ColorHex);
+            }
             border.Child = textBlock;
             item.Content = border;
 
@@ -1836,7 +1878,7 @@ namespace HLPassword
 
             var node = new FolderNode { Name = name, IsGroup = false };
             if (CurrentViewGroup == null) TreeStructure.Add(node); else CurrentViewGroup.Children.Add(node);
-            SavePasswordData(node.Id, new PasswordData()); SaveTreeStructure(); RebuildFolderList();
+            await SavePasswordDataAsync(node.Id, new PasswordData()); SaveTreeStructure(); RebuildFolderList();
         }
 
         private async void MenuCreateGroupFolderRoot_Click(object sender, RoutedEventArgs e)
@@ -1861,7 +1903,7 @@ namespace HLPassword
 
             var childNode = new FolderNode { Name = name, IsGroup = false };
             parentNode.Children.Add(childNode);
-            SavePasswordData(childNode.Id, new PasswordData()); SaveTreeStructure(); RebuildFolderList();
+            await SavePasswordDataAsync(childNode.Id, new PasswordData()); SaveTreeStructure(); RebuildFolderList();
         }
 
         private async void MenuRename_Click(object sender, RoutedEventArgs e)
@@ -1919,7 +1961,7 @@ namespace HLPassword
             if (FolderListBox.SelectedItem is ListBoxItem item) item.IsSelected = false;
         }
 
-        private void Save_Click(object sender, RoutedEventArgs e)
+        private async void Save_Click(object sender, RoutedEventArgs e)
         {
             if (string.IsNullOrEmpty(CurrentFolderId)) return;
 
@@ -1933,9 +1975,17 @@ namespace HLPassword
                 Email = SanitizeInput(CurrentEmailValue),
                 AccountType = SanitizeInput(AccountTypeBox.Text)
             };
-            SavePasswordData(CurrentFolderId, data);
 
-            ShowCustomMessage("Success", _currentLangCode == "EN" ? "Data saved successfully!" : "Dữ liệu của bạn đã được lưu, vui lòng bấm xác nhận!");
+            try
+            {
+                await SavePasswordDataAsync(CurrentFolderId, data);
+                ShowCustomMessage("Success", _currentLangCode == "EN" ? "Data saved successfully!" : "Dữ liệu của bạn đã được lưu, vui lòng bấm xác nhận!");
+            }
+            catch (Exception ex)
+            {
+                LogError(ex);
+                ShowCustomMessage("Error", _currentLangCode == "EN" ? $"Failed to save data: {ex.Message}" : $"Không thể lưu dữ liệu: {ex.Message}");
+            }
         }
 
         private void Minimize_Click(object sender, RoutedEventArgs e) => this.WindowState = WindowState.Minimized;

@@ -27,8 +27,26 @@ namespace HLPassword
                 .FirstOrDefault(attribute => attribute.Key == "SupabasePublishableKey")?.Value;
 
             return new SupabaseConfiguration(
-                Environment.GetEnvironmentVariable("HLPASSWORD_SUPABASE_URL") ?? buildUrl ?? ReadSolutionEnvValue("HLPASSWORD_SUPABASE_URL"),
-                Environment.GetEnvironmentVariable("HLPASSWORD_SUPABASE_PUBLISHABLE_KEY") ?? buildKey ?? ReadSolutionEnvValue("HLPASSWORD_SUPABASE_PUBLISHABLE_KEY"));
+                FirstNonWhiteSpace(
+                    Environment.GetEnvironmentVariable("HLPASSWORD_SUPABASE_URL"),
+                    buildUrl,
+                    ReadSolutionEnvValue("HLPASSWORD_SUPABASE_URL")),
+                FirstNonWhiteSpace(
+                    Environment.GetEnvironmentVariable("HLPASSWORD_SUPABASE_PUBLISHABLE_KEY"),
+                    buildKey,
+                    ReadSolutionEnvValue("HLPASSWORD_SUPABASE_PUBLISHABLE_KEY")));
+        }
+
+        private static string? FirstNonWhiteSpace(params string?[] values)
+        {
+            foreach (string? value in values)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value;
+                }
+            }
+            return null;
         }
 
         private static string? ReadSolutionEnvValue(string name)
@@ -47,6 +65,10 @@ namespace HLPassword
                     foreach (string line in File.ReadLines(envPath))
                     {
                         string entry = line.Trim();
+                        if (string.IsNullOrEmpty(entry) || entry.StartsWith('#'))
+                        {
+                            continue;
+                        }
                         if (entry.StartsWith("export ", StringComparison.Ordinal))
                         {
                             entry = entry.Substring(7).Trim();
